@@ -1,0 +1,50 @@
+categories:
+  - name: "Family"
+    prompts:
+      - "a family photo with people together"
+      - "a group photo of relatives"
+
+  - name: "Selfies"
+    prompts:
+      - "a selfie photo"
+      - "a close-up self-portrait"
+
+  - name: "Travel"
+    prompts:
+      - "a travel photo of a landmark or tourist destination"
+      - "a vacation photo in a foreign city"
+
+  - name: "Nature"
+    prompts:
+      - "a photo of nature, trees, mountains, or landscapes"
+      - "an outdoor nature photograph"
+
+  - name: "Food"
+    prompts:
+      - "a photo of food, a meal, or a dish"
+      - "a restaurant or cooking photo"
+
+  - name: "Pets"
+    prompts:
+      - "a photo of a pet, dog, or cat"
+
+  - name: "Concerts"
+    prompts:
+      - "a photo of a live concert or music event"
+      - "a photo of a stage with musicians performing"
+
+  - name: "Screenshots"
+    prompts:
+      - "a screenshot of a phone or computer screen"
+      - "a screen capture"
+
+  - name: "Documents"
+    prompts:
+      - "a photo of a document, receipt, or paper"
+
+  - name: "Memes"
+    prompts:
+      - "an internet meme or funny image with text"
+
+threshold: 0.22
+batch_size: 32

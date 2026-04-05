@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+backend/data/
+*.db
+_sample_photos/
+.DS_Store
