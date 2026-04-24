@@ -8,10 +8,12 @@ let state = {
     currentCategory: null,
     galleryPage: 1,
     searchQuery: "",
+    searchPage: 1,
     persons: [],
     duplicates: [],
     activeJobs: {},
 };
+const SEARCH_PER_PAGE = 40;
 
 // --- API ---
 async function api(path, opts = {}) {
@@ -239,10 +241,12 @@ async function renderFaces() {
 
 async function renderDuplicates() {
     state.duplicates = await api("/duplicates");
+    const anyKept = state.duplicates.some((g) => g.photos.some((p) => p.is_kept));
     app.innerHTML = `
         <h2 style="margin-bottom:1rem">Duplicates</h2>
         <div class="toolbar">
             <button class="btn btn-primary" onclick="doScanDuplicates()">Scan for Duplicates</button>
+            ${anyKept ? `<button class="btn" onclick="doCleanupDuplicates()">Remove non-kept</button>` : ""}
         </div>
         <div id="job-progress"></div>
         ${state.duplicates.length ? state.duplicates.map((g) => `
@@ -340,27 +344,44 @@ async function doScanDuplicates() {
     }
 }
 
-async function doSearch() {
+async function doSearch(resetPage = true) {
     const q = document.getElementById("search-input").value.trim();
     if (!q) return;
+    if (resetPage) state.searchPage = 1;
     state.searchQuery = q;
-    const results = await api(`/search?q=${encodeURIComponent(q)}&top_k=40`);
+    const data = await api(
+        `/search?q=${encodeURIComponent(q)}&page=${state.searchPage}&per_page=${SEARCH_PER_PAGE}`
+    );
     const el = document.getElementById("search-results");
-    if (!results.length) {
+    if (!data.results.length) {
         el.innerHTML = `<div class="empty"><p>No results for "${q}"</p></div>`;
         return;
     }
+    const hasPrev = state.searchPage > 1;
+    const hasNext = data.results.length === SEARCH_PER_PAGE;
     el.innerHTML = `
-        <p style="color:var(--text-dim);margin-bottom:1rem">${results.length} results</p>
+        <p style="color:var(--text-dim);margin-bottom:1rem">
+            Showing ${data.results.length} results (${data.total} embedded photos searched)
+        </p>
         <div class="photo-grid">
-            ${results.map((r) => `
+            ${data.results.map((r) => `
                 <div class="photo-card" onclick="openPhoto(${r.photo.id})">
                     <img src="/api/photos/${r.photo.id}/thumbnail" loading="lazy">
                     <div class="label">${(r.score * 100).toFixed(0)}% match</div>
                 </div>
             `).join("")}
         </div>
+        <div class="pagination">
+            ${hasPrev ? `<button class="btn btn-sm" onclick="changeSearchPage(${state.searchPage - 1})">Prev</button>` : ""}
+            <span style="padding:0.25rem 0.5rem;color:var(--text-dim)">Page ${data.page}</span>
+            ${hasNext ? `<button class="btn btn-sm" onclick="changeSearchPage(${state.searchPage + 1})">Next</button>` : ""}
+        </div>
     `;
+}
+
+function changeSearchPage(p) {
+    state.searchPage = p;
+    doSearch(false);
 }
 
 function filterCategory(cat) {
@@ -400,6 +421,21 @@ async function showPersonPhotos(personId) {
 async function keepDuplicate(groupId, photoId) {
     await api(`/duplicates/${groupId}/keep/${photoId}`, { method: "POST" });
     toast("Marked as keep");
+    render();
+}
+
+async function doCleanupDuplicates() {
+    const preview = await api("/duplicates/cleanup?dry_run=true", { method: "POST" });
+    if (!preview.would_delete) {
+        toast("Nothing to delete — mark a photo as keep in each group first");
+        return;
+    }
+    const msg = `Delete ${preview.would_delete} photo entries across ${preview.processed_groups} groups?\n\n`
+              + `(${preview.skipped_groups} groups skipped — no keep marked)\n\n`
+              + `Note: the original files on disk are NOT removed. Only the database entries and thumbnails.`;
+    if (!confirm(msg)) return;
+    const result = await api("/duplicates/cleanup?dry_run=false", { method: "POST" });
+    toast(`Deleted ${result.deleted} entries`);
     render();
 }
 
