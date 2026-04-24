@@ -23,6 +23,7 @@ PhotoSort indexes a folder of photos, classifies them into customizable categori
 - [Project Layout](#project-layout)
 - [Data & Storage](#data--storage)
 - [Logs](#logs)
+- [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
 - [Security Notes](#security-notes)
 - [Roadmap](#roadmap)
@@ -72,7 +73,7 @@ PhotoSort indexes a folder of photos, classifies them into customizable categori
 
 - Docker Engine 24+ and Docker Compose v2
 - For GPU mode: an NVIDIA GPU, recent drivers (supporting CUDA 12.6), and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed on the host
-- ~8 GB disk for the backend image (models are pre-downloaded into the image)
+- ~6 GB disk (image + models volume; weights are cached in a Docker volume after the first run)
 
 ### Without Docker
 
@@ -98,7 +99,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-First build takes ~10–15 minutes (downloads CLIP + InsightFace weights into the image). Subsequent `up` runs are near-instant.
+First build takes ~2 minutes (just installs Python dependencies). Model weights (~500 MB) are downloaded on the **first startup** into a persistent Docker volume (`photosort_models`), so the first `docker compose up` will take another 3–5 minutes before the API becomes healthy. Subsequent restarts reuse the cached weights and come up in seconds.
 
 Open:
 
@@ -285,6 +286,8 @@ photosort/
 │   ├── main.py                 # FastAPI entry + lifespan
 │   ├── cli.py                  # Typer CLI
 │   ├── requirements.txt
+│   ├── requirements-dev.txt    # Adds pytest for local testing
+│   ├── pytest.ini
 │   ├── api/                    # HTTP routes
 │   │   ├── deps.py
 │   │   ├── routes_photos.py
@@ -300,9 +303,11 @@ photosort/
 │   │   ├── scanner.py
 │   │   ├── thumbnails.py
 │   │   ├── jobs.py             # Async job tracker
+│   │   ├── paths.py            # Path traversal guard
 │   │   └── logging_config.py
-│   └── models/
-│       └── schemas.py          # Pydantic models
+│   ├── models/
+│   │   └── schemas.py          # Pydantic models
+│   └── tests/                  # pytest suite (42 tests)
 └── frontend/
     ├── index.html
     ├── app.js
@@ -344,6 +349,34 @@ Backend log format:
 Raise verbosity with `LOG_LEVEL=DEBUG` in `.env`.
 
 ---
+
+## Tests
+
+A pytest suite covers the non-model pieces (path safety, hash engine, scanner, schema validation, job tracker, database). Heavy ML code paths (CLIP / InsightFace) are intentionally not exercised in unit tests.
+
+Run locally (outside Docker), from `backend/`:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+```
+
+Or inside the backend container:
+
+```bash
+docker compose exec backend pip install -q pytest pytest-cov
+docker compose exec backend pytest
+```
+
+With coverage:
+
+```bash
+pytest --cov=services --cov=models --cov=api --cov-report=term-missing
+```
+
+Tests live in `backend/tests/` and use only temp dirs — they never touch your real photos or DB.
 
 ## Troubleshooting
 

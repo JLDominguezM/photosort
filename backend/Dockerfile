@@ -12,12 +12,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download models during build
-RUN python3 -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k')"
-RUN python3 -c "from insightface.app import FaceAnalysis; app = FaceAnalysis(name='buffalo_s'); app.prepare(ctx_id=-1)"
+# Model caches live under /models, mounted from a docker volume so the
+# ~500 MB of weights are downloaded once and persist across rebuilds.
+ENV HF_HOME=/models/huggingface \
+    TORCH_HOME=/models/torch \
+    INSIGHTFACE_HOME=/models/insightface
 
 COPY . .
-RUN mkdir -p data/thumbnails
+RUN mkdir -p data/thumbnails /models
 
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

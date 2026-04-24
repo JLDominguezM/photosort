@@ -9,6 +9,7 @@ services:
       - ./backend/data:/app/data
       - ./config:/app/config:ro
       - ${PHOTOS_DIR:-./_sample_photos}:/photos:ro
+      - photosort_models:/models
     environment:
       - PHOTOS_DIR=/photos
       - DATA_DIR=/app/data
@@ -21,7 +22,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 120s
+      # First run downloads ~500 MB of model weights into the volume.
+      start_period: 600s
     runtime: nvidia
     deploy:
       resources:
@@ -42,3 +44,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  photosort_models:
