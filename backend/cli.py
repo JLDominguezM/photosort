@@ -91,7 +91,8 @@ def classify(force: bool = typer.Option(False, "--force", help="Reclassify all p
                 emb = np.frombuffer(blob, dtype=np.float32)
             else:
                 abs_path = os.path.join(PHOTOS_DIR, row["filepath"])
-                emb = clip.encode_image(abs_path)
+                is_video = row["filepath"].lower().endswith((".mov", ".mp4", ".avi", ".mkv"))
+                emb = clip.encode_video(abs_path) if is_video else clip.encode_image(abs_path)
                 if emb is None:
                     progress.advance(task)
                     continue

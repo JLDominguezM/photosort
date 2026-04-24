@@ -51,14 +51,38 @@ class CLIPEngine:
     def encode_image(self, image_path: str) -> np.ndarray | None:
         try:
             img = Image.open(image_path).convert("RGB")
+            return self.encode_pil(img)
+        except Exception as e:
+            log.warning("CLIP encode_image failed for %s: %s", image_path, e)
+            return None
+
+    def encode_pil(self, img: Image.Image) -> np.ndarray | None:
+        try:
             img_tensor = self.preprocess(img).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 emb = self.model.encode_image(img_tensor)
                 emb = emb / emb.norm(dim=-1, keepdim=True)
             return emb.cpu().numpy().flatten()
         except Exception as e:
-            log.warning("CLIP encode_image failed for %s: %s", image_path, e)
+            log.warning("CLIP encode_pil failed: %s", e)
             return None
+
+    def encode_video(self, video_path: str, num_frames: int = 3) -> np.ndarray | None:
+        """Sample `num_frames` keyframes and return the L2-normalized mean
+        embedding as a single vector."""
+        from services.video_engine import extract_keyframes
+
+        frames = extract_keyframes(video_path, num_frames=num_frames)
+        if not frames:
+            return None
+        embeddings = [e for e in (self.encode_pil(f) for f in frames) if e is not None]
+        if not embeddings:
+            return None
+        mean = np.mean(np.stack(embeddings), axis=0)
+        norm = np.linalg.norm(mean)
+        if norm > 0:
+            mean = mean / norm
+        return mean.astype(np.float32)
 
     def encode_images_batch(self, image_paths: list[str]) -> list[np.ndarray | None]:
         results = []
