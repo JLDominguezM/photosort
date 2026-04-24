@@ -59,6 +59,13 @@ class SearchResult(BaseModel):
     score: float
 
 
+class SearchResultPage(BaseModel):
+    results: list[SearchResult]
+    total: int
+    page: int
+    per_page: int
+
+
 class JobStatus(BaseModel):
     job_id: str
     name: str

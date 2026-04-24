@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Body
 
 from api.deps import get_app_db
 from models.schemas import PersonOut
+from services.face_engine import FaceEngine
 from services.jobs import tracker
 from services.logging_config import get_logger
 from services.paths import safe_photo_path
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", tags=["Faces"])
 
 log = get_logger(__name__)
 
@@ -24,8 +25,30 @@ def _safe_path(filepath: str) -> str | None:
     return resolved
 
 
-@router.post("/faces/detect")
+def _recompute_centroid(conn, person_id: int) -> None:
+    """Recompute a person's centroid as the L2-normalized mean of their face
+    embeddings. Called after cluster creation and after merges."""
+    rows = conn.execute(
+        "SELECT embedding FROM faces WHERE person_id = ?", (person_id,)
+    ).fetchall()
+    if not rows:
+        conn.execute("UPDATE persons SET centroid = NULL WHERE id = ?", (person_id,))
+        return
+    embeddings = np.stack(
+        [np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]
+    )
+    centroid = FaceEngine.compute_centroid(embeddings)
+    conn.execute(
+        "UPDATE persons SET centroid = ? WHERE id = ?",
+        (centroid.tobytes() if centroid is not None else None, person_id),
+    )
+
+
+@router.post("/faces/detect", summary="Detect faces in photos not yet processed")
 def detect_faces(request: Request, db=Depends(get_app_db)):
+    """Run InsightFace detection + embedding on every photo without existing
+    face rows. Videos are skipped. Runs asynchronously; poll
+    /api/jobs/{job_id}."""
     face_engine = request.app.state.faces
     rows = db.execute(
         "SELECT id, filepath FROM photos WHERE id NOT IN (SELECT DISTINCT photo_id FROM faces) AND filepath NOT LIKE '%.mov' AND filepath NOT LIKE '%.mp4' AND filepath NOT LIKE '%.avi'"
@@ -37,6 +60,7 @@ def detect_faces(request: Request, db=Depends(get_app_db)):
     job_id = tracker.create("face_detect")
     total = len(rows)
     tracker.update(job_id, 0, total)
+    log.info("face_detect job %s started: total=%d", job_id, total)
 
     def _detect():
         from services.database import get_db
@@ -70,8 +94,11 @@ def detect_faces(request: Request, db=Depends(get_app_db)):
     return {"job_id": job_id, "total": total}
 
 
-@router.post("/faces/cluster")
+@router.post("/faces/cluster", summary="Group unassigned faces into persons using DBSCAN")
 def cluster_faces(request: Request, db=Depends(get_app_db)):
+    """Cluster every face with person_id IS NULL by cosine distance on the
+    face embedding. Each cluster becomes a new `persons` row with its
+    centroid pre-computed."""
     face_engine = request.app.state.faces
     rows = db.execute("SELECT id, embedding FROM faces WHERE person_id IS NULL").fetchall()
     if not rows:
@@ -82,7 +109,7 @@ def cluster_faces(request: Request, db=Depends(get_app_db)):
 
     labels = face_engine.cluster_faces(embeddings)
 
-    label_to_person = {}
+    label_to_person: dict[int, int] = {}
     for face_id, label in zip(face_ids, labels):
         if label == -1:
             continue
@@ -94,11 +121,19 @@ def cluster_faces(request: Request, db=Depends(get_app_db)):
         db.execute("UPDATE faces SET person_id = ? WHERE id = ?", (label_to_person[label], face_id))
 
     db.commit()
-    return {"clusters_created": len(label_to_person), "faces_assigned": sum(1 for l in labels if l != -1)}
+
+    for person_id in label_to_person.values():
+        _recompute_centroid(db, person_id)
+    db.commit()
+
+    assigned = sum(1 for l in labels if l != -1)
+    log.info("cluster_faces: created %d persons, assigned %d faces", len(label_to_person), assigned)
+    return {"clusters_created": len(label_to_person), "faces_assigned": assigned}
 
 
-@router.get("/faces/persons", response_model=list[PersonOut])
+@router.get("/faces/persons", response_model=list[PersonOut], summary="List detected persons")
 def list_persons(db=Depends(get_app_db)):
+    """Return every person with counts of faces and distinct photos."""
     rows = db.execute(
         """SELECT p.id, p.name,
                   COUNT(f.id) as face_count,
@@ -111,8 +146,9 @@ def list_persons(db=Depends(get_app_db)):
     return [PersonOut(**dict(r)) for r in rows]
 
 
-@router.get("/faces/persons/{person_id}")
+@router.get("/faces/persons/{person_id}", summary="List photos of a person")
 def get_person_photos(person_id: int, db=Depends(get_app_db)):
+    """Return every photo that has at least one face assigned to this person."""
     person = db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
     if not person:
         raise HTTPException(404)
@@ -134,15 +170,18 @@ def get_person_photos(person_id: int, db=Depends(get_app_db)):
     }
 
 
-@router.put("/faces/persons/{person_id}")
+@router.put("/faces/persons/{person_id}", summary="Rename a person")
 def name_person(person_id: int, name: str = Body(..., embed=True), db=Depends(get_app_db)):
+    """Assign a human-readable name to a person cluster."""
     db.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
     db.commit()
     return {"person_id": person_id, "name": name}
 
 
-@router.post("/faces/persons/merge")
+@router.post("/faces/persons/merge", summary="Merge two person clusters")
 def merge_persons(person_a: int = Body(...), person_b: int = Body(...), db=Depends(get_app_db)):
+    """Reassign every face from `person_b` to `person_a`, then delete
+    `person_b` and recompute `person_a`'s centroid over the combined set."""
     if person_a == person_b:
         raise HTTPException(400, "Cannot merge a person with themselves")
     existing = {r["id"] for r in db.execute(
@@ -152,13 +191,15 @@ def merge_persons(person_a: int = Body(...), person_b: int = Body(...), db=Depen
         raise HTTPException(404, "Person not found")
     db.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (person_a, person_b))
     db.execute("DELETE FROM persons WHERE id = ?", (person_b,))
+    _recompute_centroid(db, person_a)
     db.commit()
-    log.info("merged person %s into %s", person_b, person_a)
+    log.info("merged person %s into %s (centroid recomputed)", person_b, person_a)
     return {"merged_into": person_a, "deleted": person_b}
 
 
-@router.get("/faces/{photo_id}/crops")
+@router.get("/faces/{photo_id}/crops", summary="Face bounding boxes for a photo")
 def get_face_crops(photo_id: int, db=Depends(get_app_db)):
+    """Return each face's bbox and the person_id it was assigned to."""
     faces = db.execute(
         "SELECT id, bbox_x, bbox_y, bbox_w, bbox_h, person_id FROM faces WHERE photo_id = ?",
         (photo_id,),

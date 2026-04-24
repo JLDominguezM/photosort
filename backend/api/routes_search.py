@@ -1,12 +1,13 @@
-import os
-
 import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, HTTPException
 
 from api.deps import get_app_db
-from models.schemas import PhotoOut, SearchResult
+from models.schemas import PhotoOut, SearchResult, SearchResultPage
+from services.logging_config import get_logger
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", tags=["Search"])
+
+log = get_logger(__name__)
 
 
 def _load_embeddings(db) -> tuple[list[int], np.ndarray]:
@@ -20,46 +21,63 @@ def _load_embeddings(db) -> tuple[list[int], np.ndarray]:
     return ids, embeddings
 
 
-@router.get("/search")
+def _photo_row(db, photo_id: int):
+    return db.execute(
+        """SELECT p.*, c.category, c.confidence
+           FROM photos p
+           LEFT JOIN classifications c ON c.photo_id = p.id
+               AND c.confidence = (SELECT MAX(c2.confidence) FROM classifications c2 WHERE c2.photo_id = p.id)
+           WHERE p.id = ?""",
+        (photo_id,),
+    ).fetchone()
+
+
+@router.get("/search", response_model=SearchResultPage, summary="Semantic text search")
 def text_search(
-    q: str = Query(..., min_length=1),
-    top_k: int = Query(20, ge=1, le=200),
+    q: str = Query(..., min_length=1, description="Natural-language query"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(40, ge=1, le=200),
     request: Request = None,
     db=Depends(get_app_db),
 ):
+    """Rank all embedded photos by cosine similarity to the query text, then
+    return a paginated slice. Scoring is done over the full library; only the
+    current page is materialized into response objects."""
     clip = request.app.state.clip
     ids, embeddings = _load_embeddings(db)
     if len(ids) == 0:
-        return []
+        return SearchResultPage(results=[], total=0, page=page, per_page=per_page)
 
-    results = clip.search(q, embeddings, top_k=top_k)
+    window = page * per_page
+    ranked = clip.search(q, embeddings, top_k=window)
+    slice_start = (page - 1) * per_page
+    page_slice = ranked[slice_start:slice_start + per_page]
 
-    photo_results = []
-    for idx, score in results:
-        photo_id = ids[idx]
-        row = db.execute(
-            """SELECT p.*, c.category, c.confidence
-               FROM photos p
-               LEFT JOIN classifications c ON c.photo_id = p.id
-                   AND c.confidence = (SELECT MAX(c2.confidence) FROM classifications c2 WHERE c2.photo_id = p.id)
-               WHERE p.id = ?""",
-            (photo_id,),
-        ).fetchone()
+    log.info("search q=%r page=%d results=%d/%d", q, page, len(page_slice), len(ids))
+
+    results = []
+    for idx, score in page_slice:
+        row = _photo_row(db, ids[idx])
         if row:
-            photo_results.append(SearchResult(
-                photo=PhotoOut(**dict(row)),
-                score=score,
-            ))
-    return photo_results
+            results.append(SearchResult(photo=PhotoOut(**dict(row)), score=score))
+
+    return SearchResultPage(
+        results=results,
+        total=len(ids),
+        page=page,
+        per_page=per_page,
+    )
 
 
-@router.get("/search/similar/{photo_id}")
+@router.get("/search/similar/{photo_id}", response_model=SearchResultPage, summary="Find visually similar photos")
 def find_similar(
     photo_id: int,
-    top_k: int = Query(20, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(40, ge=1, le=200),
     request: Request = None,
     db=Depends(get_app_db),
 ):
+    """Return photos most similar to the given photo's CLIP embedding."""
     clip = request.app.state.clip
     row = db.execute("SELECT clip_embedding FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if not row or not row["clip_embedding"]:
@@ -68,23 +86,24 @@ def find_similar(
     target = np.frombuffer(row["clip_embedding"], dtype=np.float32)
     ids, embeddings = _load_embeddings(db)
     if len(ids) == 0:
-        return []
+        return SearchResultPage(results=[], total=0, page=page, per_page=per_page)
 
-    results = clip.find_similar(target, embeddings, top_k=top_k + 1)
+    window = page * per_page + 1  # +1 so dropping self still fills the page
+    ranked = clip.find_similar(target, embeddings, top_k=window)
+    filtered = [(idx, s) for idx, s in ranked if ids[idx] != photo_id]
 
-    photo_results = []
-    for idx, score in results:
-        pid = ids[idx]
-        if pid == photo_id:
-            continue
-        r = db.execute(
-            """SELECT p.*, c.category, c.confidence
-               FROM photos p
-               LEFT JOIN classifications c ON c.photo_id = p.id
-                   AND c.confidence = (SELECT MAX(c2.confidence) FROM classifications c2 WHERE c2.photo_id = p.id)
-               WHERE p.id = ?""",
-            (pid,),
-        ).fetchone()
+    slice_start = (page - 1) * per_page
+    page_slice = filtered[slice_start:slice_start + per_page]
+
+    results = []
+    for idx, score in page_slice:
+        r = _photo_row(db, ids[idx])
         if r:
-            photo_results.append(SearchResult(photo=PhotoOut(**dict(r)), score=score))
-    return photo_results[:top_k]
+            results.append(SearchResult(photo=PhotoOut(**dict(r)), score=score))
+
+    return SearchResultPage(
+        results=results,
+        total=max(len(ids) - 1, 0),
+        page=page,
+        per_page=per_page,
+    )

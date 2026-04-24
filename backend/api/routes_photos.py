@@ -12,7 +12,7 @@ from services.jobs import tracker
 from services.logging_config import get_logger
 from services.paths import safe_photo_path
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", tags=["Photos"])
 
 log = get_logger(__name__)
 
@@ -27,8 +27,11 @@ def _safe_photo_path(filepath: str) -> str:
     return resolved
 
 
-@router.post("/scan")
+@router.post("/scan", summary="Import new photos from PHOTOS_DIR")
 def scan_photos(db=Depends(get_app_db)):
+    """Walk PHOTOS_DIR, add any file not already in the DB, extract basic
+    EXIF, and pre-generate thumbnails. Runs asynchronously; poll
+    /api/jobs/{job_id} for progress."""
     new_files = get_new_photos(db)
     if not new_files:
         return {"message": "No new photos found", "count": 0}
@@ -69,7 +72,7 @@ def scan_photos(db=Depends(get_app_db)):
     return {"job_id": job_id, "total": total}
 
 
-@router.get("/photos", response_model=PhotoList)
+@router.get("/photos", response_model=PhotoList, summary="List photos with filters")
 def list_photos(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -122,7 +125,7 @@ def list_photos(
     return PhotoList(photos=photos, total=total, page=page, per_page=per_page)
 
 
-@router.get("/photos/{photo_id}")
+@router.get("/photos/{photo_id}", summary="Get a photo's metadata and top category")
 def get_photo(photo_id: int, db=Depends(get_app_db)):
     row = db.execute(
         """SELECT p.*, c.category, c.confidence
@@ -137,7 +140,7 @@ def get_photo(photo_id: int, db=Depends(get_app_db)):
     return PhotoOut(**dict(row))
 
 
-@router.get("/photos/{photo_id}/thumbnail")
+@router.get("/photos/{photo_id}/thumbnail", summary="300px JPEG thumbnail")
 def get_thumbnail(photo_id: int, db=Depends(get_app_db)):
     row = db.execute("SELECT filepath FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if not row:
@@ -151,7 +154,7 @@ def get_thumbnail(photo_id: int, db=Depends(get_app_db)):
     return FileResponse(thumb, media_type="image/jpeg")
 
 
-@router.get("/photos/{photo_id}/full")
+@router.get("/photos/{photo_id}/full", summary="Serve the original photo file")
 def get_full_photo(photo_id: int, db=Depends(get_app_db)):
     row = db.execute("SELECT filepath FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if not row:
@@ -162,7 +165,7 @@ def get_full_photo(photo_id: int, db=Depends(get_app_db)):
     return FileResponse(abs_path)
 
 
-@router.get("/stats", response_model=StatsOut)
+@router.get("/stats", response_model=StatsOut, summary="Library-wide counts", tags=["Stats"])
 def get_stats(db=Depends(get_app_db)):
     total = db.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     classified = db.execute("SELECT COUNT(DISTINCT photo_id) FROM classifications").fetchone()[0]
@@ -179,7 +182,7 @@ def get_stats(db=Depends(get_app_db)):
     )
 
 
-@router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}", summary="Get async job status", tags=["Jobs"])
 def get_job(job_id: str):
     job = tracker.get(job_id)
     if not job:
@@ -187,6 +190,6 @@ def get_job(job_id: str):
     return {"job_id": job_id, **job}
 
 
-@router.get("/jobs")
+@router.get("/jobs", summary="List all tracked jobs", tags=["Jobs"])
 def list_jobs():
     return tracker.list_all()
