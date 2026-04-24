@@ -10,6 +10,7 @@ from services.scanner import get_new_photos, extract_exif, PHOTOS_DIR
 from services.thumbnails import ensure_thumbnail, get_thumbnail_path
 from services.jobs import tracker
 from services.logging_config import get_logger
+from services.paths import safe_photo_path
 
 router = APIRouter(prefix="/api")
 
@@ -19,14 +20,11 @@ PHOTOS_BASE = os.path.realpath(os.getenv("PHOTOS_DIR", "/photos"))
 
 
 def _safe_photo_path(filepath: str) -> str:
-    """Resolve a DB-stored relative filepath into an absolute path, rejecting
-    any attempt to escape PHOTOS_BASE (path traversal, absolute paths, symlinks
-    pointing outside the base)."""
-    candidate = os.path.realpath(os.path.join(PHOTOS_BASE, filepath))
-    if not (candidate == PHOTOS_BASE or candidate.startswith(PHOTOS_BASE + os.sep)):
-        log.warning("Rejected path traversal attempt: %r -> %r", filepath, candidate)
+    resolved = safe_photo_path(PHOTOS_BASE, filepath)
+    if resolved is None:
+        log.warning("Rejected path traversal attempt: %r", filepath)
         raise HTTPException(403, "Invalid path")
-    return candidate
+    return resolved
 
 
 @router.post("/scan")

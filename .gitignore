@@ -5,3 +5,9 @@ backend/data/
 *.db
 _sample_photos/
 .DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.bak.*

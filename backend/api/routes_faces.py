@@ -8,6 +8,7 @@ from api.deps import get_app_db
 from models.schemas import PersonOut
 from services.jobs import tracker
 from services.logging_config import get_logger
+from services.paths import safe_photo_path
 
 router = APIRouter(prefix="/api")
 
@@ -17,11 +18,10 @@ PHOTOS_BASE = os.path.realpath(os.getenv("PHOTOS_DIR", "/photos"))
 
 
 def _safe_path(filepath: str) -> str | None:
-    candidate = os.path.realpath(os.path.join(PHOTOS_BASE, filepath))
-    if candidate == PHOTOS_BASE or candidate.startswith(PHOTOS_BASE + os.sep):
-        return candidate
-    log.warning("Rejected path traversal in faces: %r", filepath)
-    return None
+    resolved = safe_photo_path(PHOTOS_BASE, filepath)
+    if resolved is None:
+        log.warning("Rejected path traversal in faces: %r", filepath)
+    return resolved
 
 
 @router.post("/faces/detect")
