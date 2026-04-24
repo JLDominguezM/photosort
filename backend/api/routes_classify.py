@@ -1,17 +1,22 @@
 import os
+import shutil
 import threading
+import time
 
 import numpy as np
 import yaml
-from fastapi import APIRouter, Depends, Request, Body
+from fastapi import APIRouter, Depends, Request, Body, HTTPException
 
 from api.deps import get_app_db
-from models.schemas import ClassifyResult, CategoryOut
+from models.schemas import ClassifyResult, CategoryOut, CategoriesConfig
 from services.jobs import tracker
+from services.logging_config import get_logger
 
 router = APIRouter(prefix="/api")
 
-PHOTOS_BASE = os.getenv("PHOTOS_DIR", "/photos")
+log = get_logger(__name__)
+
+PHOTOS_BASE = os.path.realpath(os.getenv("PHOTOS_DIR", "/photos"))
 CONFIG_DIR = os.getenv("CONFIG_DIR", "config")
 
 
@@ -133,9 +138,22 @@ def list_categories(db=Depends(get_app_db)):
 
 
 @router.put("/categories")
-def update_categories(request: Request, categories: dict = Body(...)):
+def update_categories(request: Request, payload: CategoriesConfig):
     config_path = os.path.join(CONFIG_DIR, "categories.yml")
-    with open(config_path, "w") as f:
-        yaml.dump(categories, f, default_flow_style=False)
+    if os.path.exists(config_path):
+        backup = f"{config_path}.bak.{int(time.time())}"
+        try:
+            shutil.copy2(config_path, backup)
+            log.info("Backed up previous categories.yml to %s", backup)
+        except OSError as e:
+            log.warning("Could not backup categories.yml: %s", e)
+    data = payload.model_dump()
+    try:
+        with open(config_path, "w") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    except OSError as e:
+        log.error("Failed to write categories.yml: %s", e)
+        raise HTTPException(500, "Could not persist categories")
     request.app.state.clip.load_categories(config_path)
-    return {"message": "Categories updated"}
+    log.info("Categories updated: %d entries", len(payload.categories))
+    return {"message": "Categories updated", "count": len(payload.categories)}

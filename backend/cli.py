@@ -6,8 +6,11 @@ from rich.console import Console
 from rich.progress import Progress
 from rich.table import Table
 
+from services.logging_config import get_logger
+
 app = typer.Typer(name="photosort", help="Local AI photo classifier")
 console = Console()
+log = get_logger("photosort.cli")
 
 PHOTOS_DIR = os.getenv("PHOTOS_DIR", "/photos")
 CONFIG_DIR = os.getenv("CONFIG_DIR", "config")
@@ -49,8 +52,8 @@ def scan():
                 row = db.execute("SELECT id FROM photos WHERE filepath = ?", (f["filepath"],)).fetchone()
                 if row and not f["is_video"]:
                     ensure_thumbnail(row[0], abs_path)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("import failed for %s: %s", f["filepath"], e)
             progress.advance(task)
     console.print(f"[green]Imported {len(new_files)} files.[/green]")
     db.close()
@@ -177,8 +180,8 @@ def faces(
                         )
                         count += 1
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("face detect failed for %s: %s", row["filepath"], e)
                 progress.advance(task)
         console.print(f"[green]Detected {count} faces.[/green]")
 

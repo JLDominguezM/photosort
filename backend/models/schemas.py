@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class PhotoOut(BaseModel):
@@ -75,3 +75,22 @@ class StatsOut(BaseModel):
     faces_detected: int
     persons: int
     duplicate_groups: int
+
+
+class CategoryDef(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    prompts: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("prompts")
+    @classmethod
+    def _non_empty_prompts(cls, v: list[str]) -> list[str]:
+        cleaned = [p.strip() for p in v if p and p.strip()]
+        if not cleaned:
+            raise ValueError("prompts must contain at least one non-empty string")
+        return cleaned
+
+
+class CategoriesConfig(BaseModel):
+    categories: list[CategoryDef] = Field(min_length=1, max_length=100)
+    threshold: float = Field(default=0.22, ge=0.0, le=1.0)
+    batch_size: int = Field(default=32, ge=1, le=256)

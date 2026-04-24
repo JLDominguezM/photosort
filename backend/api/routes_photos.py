@@ -9,10 +9,24 @@ from models.schemas import PhotoOut, PhotoList, StatsOut
 from services.scanner import get_new_photos, extract_exif, PHOTOS_DIR
 from services.thumbnails import ensure_thumbnail, get_thumbnail_path
 from services.jobs import tracker
+from services.logging_config import get_logger
 
 router = APIRouter(prefix="/api")
 
-PHOTOS_BASE = os.getenv("PHOTOS_DIR", "/photos")
+log = get_logger(__name__)
+
+PHOTOS_BASE = os.path.realpath(os.getenv("PHOTOS_DIR", "/photos"))
+
+
+def _safe_photo_path(filepath: str) -> str:
+    """Resolve a DB-stored relative filepath into an absolute path, rejecting
+    any attempt to escape PHOTOS_BASE (path traversal, absolute paths, symlinks
+    pointing outside the base)."""
+    candidate = os.path.realpath(os.path.join(PHOTOS_BASE, filepath))
+    if not (candidate == PHOTOS_BASE or candidate.startswith(PHOTOS_BASE + os.sep)):
+        log.warning("Rejected path traversal attempt: %r -> %r", filepath, candidate)
+        raise HTTPException(403, "Invalid path")
+    return candidate
 
 
 @router.post("/scan")
@@ -26,7 +40,8 @@ def scan_photos(db=Depends(get_app_db)):
     tracker.update(job_id, 0, total)
 
     def _scan():
-        conn_inner = __import__("services.database", fromlist=["get_db"]).get_db()
+        from services.database import get_db
+        conn_inner = get_db()
         count = 0
         for i, f in enumerate(new_files):
             abs_path = os.path.join(PHOTOS_BASE, f["filepath"])
@@ -45,10 +60,11 @@ def scan_photos(db=Depends(get_app_db)):
                 if row and not f["is_video"]:
                     ensure_thumbnail(row[0], abs_path)
                 count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("scan import failed for %s: %s", f["filepath"], e)
             tracker.update(job_id, i + 1, total)
         tracker.complete(job_id, {"imported": count})
+        log.info("scan job %s finished: imported=%d/%d", job_id, count, total)
         conn_inner.close()
 
     threading.Thread(target=_scan, daemon=True).start()
@@ -130,7 +146,7 @@ def get_thumbnail(photo_id: int, db=Depends(get_app_db)):
         raise HTTPException(404)
     thumb = get_thumbnail_path(photo_id)
     if not thumb:
-        abs_path = os.path.join(PHOTOS_BASE, row["filepath"])
+        abs_path = _safe_photo_path(row["filepath"])
         thumb = ensure_thumbnail(photo_id, abs_path)
     if not thumb:
         raise HTTPException(404, "Could not generate thumbnail")
@@ -142,7 +158,7 @@ def get_full_photo(photo_id: int, db=Depends(get_app_db)):
     row = db.execute("SELECT filepath FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if not row:
         raise HTTPException(404)
-    abs_path = os.path.join(PHOTOS_BASE, row["filepath"])
+    abs_path = _safe_photo_path(row["filepath"])
     if not os.path.exists(abs_path):
         raise HTTPException(404)
     return FileResponse(abs_path)

@@ -5,6 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.database import init_db
+from services.logging_config import get_logger
+
+log = get_logger("photosort.main")
 
 
 @asynccontextmanager
@@ -12,8 +15,8 @@ async def lifespan(app: FastAPI):
     init_db()
 
     device = os.getenv("DEVICE", "cuda")
+    log.info("Starting PhotoSort (device=%s)", device)
 
-    # Lazy imports to avoid slow startup if models aren't needed yet
     from services.clip_engine import CLIPEngine
     from services.face_engine import FaceEngine
     from services.hash_engine import HashEngine
@@ -22,16 +25,25 @@ async def lifespan(app: FastAPI):
     app.state.clip.load_categories(os.path.join(os.getenv("CONFIG_DIR", "config"), "categories.yml"))
     app.state.faces = FaceEngine(device=device)
     app.state.hasher = HashEngine()
+    log.info("Engines loaded")
 
     yield
+    log.info("Shutting down")
 
 
 app = FastAPI(title="PhotoSort", lifespan=lifespan)
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 

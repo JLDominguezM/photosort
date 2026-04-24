@@ -7,10 +7,21 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Body
 from api.deps import get_app_db
 from models.schemas import PersonOut
 from services.jobs import tracker
+from services.logging_config import get_logger
 
 router = APIRouter(prefix="/api")
 
-PHOTOS_BASE = os.getenv("PHOTOS_DIR", "/photos")
+log = get_logger(__name__)
+
+PHOTOS_BASE = os.path.realpath(os.getenv("PHOTOS_DIR", "/photos"))
+
+
+def _safe_path(filepath: str) -> str | None:
+    candidate = os.path.realpath(os.path.join(PHOTOS_BASE, filepath))
+    if candidate == PHOTOS_BASE or candidate.startswith(PHOTOS_BASE + os.sep):
+        return candidate
+    log.warning("Rejected path traversal in faces: %r", filepath)
+    return None
 
 
 @router.post("/faces/detect")
@@ -32,7 +43,10 @@ def detect_faces(request: Request, db=Depends(get_app_db)):
         conn = get_db()
         count = 0
         for i, row in enumerate(rows):
-            abs_path = os.path.join(PHOTOS_BASE, row["filepath"])
+            abs_path = _safe_path(row["filepath"])
+            if abs_path is None:
+                tracker.update(job_id, i + 1, total)
+                continue
             try:
                 faces = face_engine.detect_faces(abs_path)
                 for face in faces:
@@ -45,10 +59,11 @@ def detect_faces(request: Request, db=Depends(get_app_db)):
                     )
                     count += 1
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("face detect failed for %s: %s", row["filepath"], e)
             tracker.update(job_id, i + 1, total)
         tracker.complete(job_id, {"faces_detected": count})
+        log.info("face_detect job %s finished: faces=%d photos=%d", job_id, count, total)
         conn.close()
 
     threading.Thread(target=_detect, daemon=True).start()
@@ -128,9 +143,17 @@ def name_person(person_id: int, name: str = Body(..., embed=True), db=Depends(ge
 
 @router.post("/faces/persons/merge")
 def merge_persons(person_a: int = Body(...), person_b: int = Body(...), db=Depends(get_app_db)):
+    if person_a == person_b:
+        raise HTTPException(400, "Cannot merge a person with themselves")
+    existing = {r["id"] for r in db.execute(
+        "SELECT id FROM persons WHERE id IN (?, ?)", (person_a, person_b)
+    ).fetchall()}
+    if person_a not in existing or person_b not in existing:
+        raise HTTPException(404, "Person not found")
     db.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (person_a, person_b))
     db.execute("DELETE FROM persons WHERE id = ?", (person_b,))
     db.commit()
+    log.info("merged person %s into %s", person_b, person_a)
     return {"merged_into": person_a, "deleted": person_b}
 
 

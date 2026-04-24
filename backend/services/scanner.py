@@ -5,7 +5,11 @@ import exifread
 from PIL import Image
 import pillow_heif
 
+from services.logging_config import get_logger
+
 pillow_heif.register_heif_opener()
+
+log = get_logger(__name__)
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tiff", ".bmp"}
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".avi", ".mkv"}
@@ -41,13 +45,13 @@ def extract_exif(filepath: str) -> dict:
         dt = tags.get("EXIF DateTimeOriginal") or tags.get("Image DateTime")
         if dt:
             info["taken_at"] = str(dt).replace(":", "-", 2)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("EXIF read failed for %s: %s", filepath, e)
     try:
         with Image.open(filepath) as img:
             info["width"], info["height"] = img.size
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Pillow open failed for %s: %s", filepath, e)
     return info
 
 

@@ -5,7 +5,11 @@ import yaml
 from PIL import Image
 import pillow_heif
 
+from services.logging_config import get_logger
+
 pillow_heif.register_heif_opener()
+
+log = get_logger(__name__)
 
 
 class CLIPEngine:
@@ -52,7 +56,8 @@ class CLIPEngine:
                 emb = self.model.encode_image(img_tensor)
                 emb = emb / emb.norm(dim=-1, keepdim=True)
             return emb.cpu().numpy().flatten()
-        except Exception:
+        except Exception as e:
+            log.warning("CLIP encode_image failed for %s: %s", image_path, e)
             return None
 
     def encode_images_batch(self, image_paths: list[str]) -> list[np.ndarray | None]:
@@ -64,8 +69,8 @@ class CLIPEngine:
                 img = Image.open(path).convert("RGB")
                 images.append(self.preprocess(img))
                 indices.append(i)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("CLIP batch skip %s: %s", path, e)
         results = [None] * len(image_paths)
         if not images:
             return results

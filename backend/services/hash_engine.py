@@ -2,7 +2,11 @@ from PIL import Image
 import imagehash
 import pillow_heif
 
+from services.logging_config import get_logger
+
 pillow_heif.register_heif_opener()
+
+log = get_logger(__name__)
 
 
 class HashEngine:
@@ -11,7 +15,8 @@ class HashEngine:
         try:
             img = Image.open(image_path)
             return str(imagehash.phash(img))
-        except Exception:
+        except Exception as e:
+            log.warning("phash failed for %s: %s", image_path, e)
             return None
 
     @staticmethod
