@@ -2,6 +2,7 @@ FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
+    build-essential \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
