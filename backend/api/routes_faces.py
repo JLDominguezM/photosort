@@ -153,8 +153,12 @@ def get_person_photos(person_id: int, db=Depends(get_app_db)):
     if not person:
         raise HTTPException(404)
 
+    # Explicit columns: SELECT p.* would pull clip_embedding (BLOB) which
+    # FastAPI's encoder then tries to UTF-8 decode and 500s on.
     photos = db.execute(
-        """SELECT DISTINCT p.*, c.category, c.confidence
+        """SELECT DISTINCT p.id, p.filepath, p.filename, p.filesize,
+                  p.width, p.height, p.taken_at, p.imported_at,
+                  c.category, c.confidence
            FROM photos p
            JOIN faces f ON f.photo_id = p.id
            LEFT JOIN classifications c ON c.photo_id = p.id

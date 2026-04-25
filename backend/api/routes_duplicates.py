@@ -81,8 +81,12 @@ def list_duplicates(db=Depends(get_app_db)):
     groups = db.execute("SELECT id FROM duplicate_groups ORDER BY id").fetchall()
     result = []
     for g in groups:
+        # Explicit columns: SELECT p.* would pull clip_embedding (BLOB) which
+        # FastAPI's encoder then tries to UTF-8 decode and 500s on.
         photos = db.execute(
-            """SELECT p.*, dm.is_kept
+            """SELECT p.id, p.filepath, p.filename, p.filesize,
+                      p.width, p.height, p.taken_at, p.imported_at,
+                      dm.is_kept
                FROM photos p
                JOIN duplicate_members dm ON dm.photo_id = p.id
                WHERE dm.group_id = ?
